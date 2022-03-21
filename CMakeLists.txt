@@ -8,7 +8,7 @@ project(mics6814)
 set_source_files_properties(tags PROPERTIES GENERATED true)
 add_custom_target(
     tags
-    COMMAND ctags -R --languages=C --exclude=build
+    COMMAND ctags -R --language-force=c --exclude=build
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 

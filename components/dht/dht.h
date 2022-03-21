@@ -49,6 +49,8 @@
 #include <driver/gpio.h>
 #include <esp_err.h>
 
+#define DHT_PROBE_INTERVAL ((60 * 2)) // 2 minutes
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -77,20 +79,6 @@ typedef enum
  */
 esp_err_t dht_read_data(dht_sensor_type_t sensor_type, gpio_num_t pin,
         int16_t *humidity, int16_t *temperature);
-
-/**
- * @brief Read float data from sensor on specified pin
- *
- * Humidity and temperature are returned as floats.
- *
- * @param sensor_type DHT11 or DHT22
- * @param pin GPIO pin connected to sensor OUT
- * @param[out] humidity Humidity, percents, nullable
- * @param[out] temperature Temperature, degrees Celsius, nullable
- * @return `ESP_OK` on success
- */
-esp_err_t dht_read_float_data(dht_sensor_type_t sensor_type, gpio_num_t pin,
-        float *humidity, float *temperature);
 
 #ifdef __cplusplus
 }
