@@ -25,6 +25,8 @@ static const char *TAG = "mics6814";
 
 static inline
 void mics6814_init_adc(){
+    // adc2_vref_to_gpio((gpio_num_t)25);
+
     adc1_config_width(ADC_WIDTH_12Bit);
     adc1_config_channel_atten(MICS6814_ADC_CHANNEL, ADC_ATTEN_11db);
 
@@ -36,13 +38,13 @@ void mics6814_init_adc(){
 
     switch (mode){
         case ESP_ADC_CAL_VAL_EFUSE_VREF:
-            ESP_LOGD(TAG, "ADC eFuse Vref used for characterization\n");
+            ESP_LOGI(TAG, "ADC eFuse Vref used for characterization");
             break;
         case ESP_ADC_CAL_VAL_EFUSE_TP:
-            ESP_LOGD(TAG, "ADC Two Point value used for characterization\n");
+            ESP_LOGI(TAG, "ADC Two Point value used for characterization");
             break;
         case ESP_ADC_CAL_VAL_DEFAULT_VREF:
-            ESP_LOGD(TAG, "ADC Default Vref used for characterization\n");
+            ESP_LOGI(TAG, "ADC Default Vref used for characterization");
             break;
         default:
             break;
@@ -56,17 +58,13 @@ void mics6814_init(){
 
 uint32_t mics6814_read_voltage(){
     uint32_t ret = 0;
-    uint32_t aux = 0;
 
-    // the voltage should never get his high, so doing this *should* be fine
+    // the voltage should never get this high, so doing this *should* be fine
     if (time(NULL) <= (time_t)MICS6814_WARMUP_TIME) return 0x80000000;
 
     for (uint8_t i = 0; i < MICS6814_SAMPLE_SIZE; i++){
-        esp_adc_cal_get_voltage((adc_channel_t)MICS6814_ADC_CHANNEL,
-                                &mics6814_adc_characteristics,
-                                &aux);
-        ret += aux;
+        ret += adc1_get_raw((adc_channel_t)MICS6814_ADC_CHANNEL);
     }
 
-    return (ret >> MICS6814_SAMPLE) & 0xFFF;
+    return esp_adc_cal_raw_to_voltage((ret >> MICS6814_SAMPLE) & 0xFFF, &mics6814_adc_characteristics);
 }

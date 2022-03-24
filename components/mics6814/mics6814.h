@@ -23,8 +23,8 @@
 #define MICS6814_ADC         ADC_UNIT_1
 #define MICS6814_ADC_CHANNEL ADC1_CHANNEL_0
 #define MICS6814_ADC_VREF    1100
-#define MICS6814_SAMPLE_SIZE 8           // 2^n
-#define MICS6814_SAMPLE      3           // log2(MICS6814_SAMPLE_SIZE)
+#define MICS6814_SAMPLE_SIZE 16           // 2^n
+#define MICS6814_SAMPLE      4           // log2(MICS6814_SAMPLE_SIZE)
 #define MICS6814_WARMUP_TIME ((60 * 10)) // 10 minutes
 #define MICS6814_WARMUP      0x80000000  // sensor warmup
 

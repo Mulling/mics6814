@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <esp_log.h>
 
 #include "dht.h"
 #include "mics6814.h"
@@ -28,7 +29,7 @@
 #undef LOG_CSV
 
 #define ADC  ADC1_CHANNEL_0 // pin 36
-#define VREF 1100           // value calibrated on the chip, see debug log and menuconfig for the calibration method used
+#define VREF 1106           // read from adc2_vref_to_gpio, see debug log and menuconfig for the calibration method used
 
 #define TASK_DELAY_MS(ms) (vTaskDelay(pdMS_TO_TICKS((ms))))
 
@@ -61,6 +62,7 @@ void app_main(void){
     mics6814_init();
 
     gpio_set_pull_mode(DHT_GPIO, GPIO_PULLUP_ONLY);
+
 
     TASK_DELAY_MS(1000); // wait for the battery to stabilize
 
