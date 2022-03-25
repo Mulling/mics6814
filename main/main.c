@@ -13,18 +13,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include <esp_log.h>
 
 #include "dht.h"
 #include "mics6814.h"
 #include "ssd1306.h"
 
+#define PPG_GPIO 0
+#define PPG_GPIO_PIN_SEL ((1ULL << PPG_GPIO))
 #define DHT_GPIO 17
 #undef LOG_CSV
 
@@ -35,6 +37,15 @@
 
 MICS6814_ADC_CHARACTERISTICS;
 SSD1306_t dev;
+
+volatile bool mics6814_skip_warmup = false;
+
+static
+void IRAM_ATTR ppg_isr(void *arg){
+    (void)arg;
+    mics6814_skip_warmup = !mics6814_skip_warmup;
+}
+
 
 // TODO: move this to another task, that updates the screen as needed
 static inline
@@ -52,6 +63,16 @@ void app_main(void){
     int16_t tmp;
     int16_t hum;
     bool blink = 0;
+
+    gpio_config_t gpio;
+    gpio.intr_type = GPIO_INTR_NEGEDGE;
+    gpio.pin_bit_mask = PPG_GPIO_PIN_SEL;
+    gpio.mode = GPIO_MODE_INPUT;
+    gpio.pull_up_en = true;
+    gpio_config(&gpio);
+
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(PPG_GPIO, ppg_isr, (void*) PPG_GPIO);
 
     i2c_master_init(&dev, CONFIG_SDA_GPIO, CONFIG_SCL_GPIO, CONFIG_RESET_GPIO);
 

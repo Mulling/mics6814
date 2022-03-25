@@ -31,6 +31,7 @@
 #define MICS6814_ADC_CHARACTERISTICS esp_adc_cal_characteristics_t mics6814_adc_characteristics
 
 extern MICS6814_ADC_CHARACTERISTICS;
+extern volatile bool mics6814_skip_warmup;
 
 void mics6814_init();
 uint32_t mics6814_read_voltage();

@@ -60,7 +60,7 @@ uint32_t mics6814_read_voltage(){
     uint32_t ret = 0;
 
     // the voltage should never get this high, so doing this *should* be fine
-    if (time(NULL) <= (time_t)MICS6814_WARMUP_TIME) return 0x80000000;
+    if (!mics6814_skip_warmup && (time(NULL) <= (time_t)MICS6814_WARMUP_TIME)) return 0x80000000;
 
     for (uint8_t i = 0; i < MICS6814_SAMPLE_SIZE; i++){
         ret += adc1_get_raw((adc_channel_t)MICS6814_ADC_CHANNEL);
