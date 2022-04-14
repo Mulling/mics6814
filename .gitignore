@@ -1,3 +1,5 @@
 build/*
 *.old
 tags
+data
+graphs

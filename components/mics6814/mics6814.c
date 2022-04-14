@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+static const char *TAG = "mics6814";
+
 #include <esp_adc_cal.h>
 #include <esp_log.h>
 #include <esp_rom_sys.h>
@@ -23,13 +25,12 @@
 
 #include "mics6814.h"
 
-static const char *TAG = "mics6814";
-
+static esp_adc_cal_characteristics_t mics6814_adc_characteristics;
 static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 
-static inline
+static inline __attribute__((always_inline))
 void mics6814_init_adc(){
-    // adc2_vref_to_gpio((gpio_num_t)25);
+    // adc2_vref_to_gpio((gpio_num_t)25); // set to read VREF
 
     adc1_config_width(ADC_WIDTH_12Bit);
     adc1_config_channel_atten(MICS6814_ADC_CHANNEL, ADC_ATTEN_11db);
@@ -53,23 +54,24 @@ void mics6814_init_adc(){
     }
 }
 
-inline
+inline __attribute__((always_inline))
 void mics6814_init(){
     mics6814_init_adc();
+
+    ESP_LOGI(TAG, "Sensor started");
 }
 
 uint32_t mics6814_read_voltage(){
     uint32_t ret = 0;
 
-    // the voltage should never get this high, so doing this *should* be fine
+    // NOTE: the voltage should never get this high, so doing this *should* be fine
     if (!mics6814_skip_warmup && (time(NULL) <= (time_t)MICS6814_WARMUP_TIME)) return 0x80000000;
 
-    // don't know if we need this critical section, since the ADC already has one
-    // this does prevent the task from begin preempted when reading the samples
+    // XXX: don't know if we need this critical section, since the ADC already has one
+    // this does prevent the task from begin preempted when sampling
     taskENTER_CRITICAL(&mux);
-    for (uint8_t i = 0; i < MICS6814_SAMPLE_SIZE; i++){
+    for (uint8_t i = 0; i < MICS6814_SAMPLE_SIZE; i++)
         ret += adc1_get_raw((adc_channel_t)MICS6814_ADC_CHANNEL);
-    }
     taskEXIT_CRITICAL(&mux);
 
     return esp_adc_cal_raw_to_voltage((ret >> MICS6814_SAMPLE) & 0xFFF, &mics6814_adc_characteristics);

@@ -49,7 +49,7 @@
 #include <driver/gpio.h>
 #include <esp_err.h>
 
-#define DHT_PROBE_INTERVAL ((60 * 2)) // 2 minutes
+#define DHT_PROBE_INTERVAL ((30)) // 2 minutes
 
 #ifdef __cplusplus
 extern "C" {

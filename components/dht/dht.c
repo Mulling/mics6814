@@ -217,18 +217,6 @@ esp_err_t dht_read_data(dht_sensor_type_t sensor_type, gpio_num_t pin,
 {
     CHECK_ARG(humidity || temperature);
 
-    static int16_t old_humidity = 0;
-    static int16_t old_temperature = 0;
-
-    static time_t last_probe = 0xF0000000; // force probe on first call
-
-    if ((time(NULL) - last_probe) < (time_t)DHT_PROBE_INTERVAL){ // wait for DHT_PROBE_INTERVAL before probing again
-        *humidity = old_humidity;
-        *temperature = old_temperature;
-        ESP_LOGD(TAG, "Sensor data (%lu seconds old): humidity=%d, temp=%d", last_probe, *humidity, *temperature);
-        return ESP_OK;
-    }
-
     uint8_t data[DHT_DATA_BYTES] = { 0 };
 
     gpio_set_direction(pin, GPIO_MODE_OUTPUT_OD);
@@ -255,14 +243,10 @@ esp_err_t dht_read_data(dht_sensor_type_t sensor_type, gpio_num_t pin,
 
     if (humidity){
         *humidity = dht_convert_data(sensor_type, data[0], data[1]);
-        old_humidity = *humidity;
     }
     if (temperature){
         *temperature = dht_convert_data(sensor_type, data[2], data[3]);
-        old_temperature = *temperature;
     }
-
-    last_probe = time(NULL);
 
     ESP_LOGD(TAG, "Sensor data: humidity=%d, temp=%d", *humidity, *temperature);
     return ESP_OK;
