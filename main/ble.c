@@ -24,7 +24,7 @@ static const char *TAG = "ble";
 #include <esp_gap_ble_api.h>
 #include <esp_gatt_common_api.h>
 #include <esp_gatts_api.h>
-#include <freertos/semphr.h>
+#include <freertos/queue.h>
 #include <esp_log.h>
 #include <nvs_flash.h>
 #include <string.h>
@@ -34,9 +34,7 @@ static const char *TAG = "ble";
 #define ESP_APP_ID 0x55
 #define LOCAL_MTU  0x1F4
 
-static TaskHandle_t ble_loop_handle;
 static QueueHandle_t ble_adv_msg_queue;
-static SemaphoreHandle_t gap_callback_lck;
 
 static uint8_t raw_adv_data[31] = {
     0x02, 0x0A, 0xEB,       // tx power
@@ -59,34 +57,25 @@ void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
     switch(event){
         case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
             ESP_ERROR_CHECK(esp_ble_gap_start_advertising(&ble_adv_params));
-            xSemaphoreGive(gap_callback_lck);
             ESP_LOGD(TAG, "ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT");
             break;
         case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
-            xSemaphoreGive(gap_callback_lck);
+            {
+                char ble_adv_msg[18 + 1];
+                size_t n;
+
+                if (xQueueReceive(ble_adv_msg_queue, (void*)ble_adv_msg, (TickType_t)portMAX_DELAY) == pdPASS){
+
+                    memcpy(&raw_adv_data[13], ble_adv_msg, (n = strlen(ble_adv_msg)));
+                    raw_adv_data[11] = n + 1;
+
+                    ESP_ERROR_CHECK(esp_ble_gap_config_adv_data_raw(raw_adv_data, sizeof(raw_adv_data)));
+                }
+            }
             ESP_LOGD(TAG, "ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT");
             break;
         default:
             break;
-    }
-}
-
-static
-void ble_loop(void *args){
-    char ble_adv_msg[18 + 1];
-    size_t n;
-
-    while (1){
-        if (xQueueReceive(ble_adv_msg_queue, (void*)ble_adv_msg, (TickType_t)portMAX_DELAY) == pdPASS){
-            ESP_ERROR_CHECK(esp_ble_gap_stop_advertising());
-            xSemaphoreTake(gap_callback_lck, (TickType_t)portMAX_DELAY);
-
-            memcpy(&raw_adv_data[13], ble_adv_msg, (n = strlen(ble_adv_msg)));
-            raw_adv_data[11] = n + 1;
-
-            ESP_ERROR_CHECK(esp_ble_gap_config_adv_data_raw(raw_adv_data, sizeof(raw_adv_data)));
-            xSemaphoreTake(gap_callback_lck, (TickType_t)portMAX_DELAY);
-        }
     }
 }
 
@@ -99,6 +88,7 @@ void ble_update_adv_msg(const char *restrict fmt, ...){
     va_end(args);
 
     xQueueSend(ble_adv_msg_queue, (void*)adv_msg, (TickType_t)0);
+    ESP_ERROR_CHECK(esp_ble_gap_stop_advertising());
 }
 
 static
@@ -119,8 +109,6 @@ void gatts_event_handler(esp_gatts_cb_event_t event,
 
 inline __attribute__((always_inline))
 esp_err_t ble_init(){
-    gap_callback_lck = xSemaphoreCreateBinary();
-
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
 
@@ -137,8 +125,6 @@ esp_err_t ble_init(){
 
     if((ble_adv_msg_queue = xQueueCreate(10, sizeof(char) * (18 + 1))) == NULL)
         ESP_LOGE(TAG, "Failed to crate ble_msg_queue");
-
-    xTaskCreatePinnedToCore(ble_loop, "ble_loop", 2048, NULL, 10, &ble_loop_handle, 0);
 
     return ESP_OK;
 }
