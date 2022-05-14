@@ -13,13 +13,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-#ifndef BLE_H
-#define BLE_H
+#ifndef BLE_CONN_LST_H
+#define BLE_CONN_LST_H
 
-#include <esp_err.h>
+#include <esp_gatts_api.h>
+#include <stdint.h>
 
-esp_err_t ble_init();
-void ble_set_nh3_attr(uint8_t *value, const uint16_t);
-void ble_update_adv_msg(const char *adv_msg, ...);
+typedef struct ble_conn {
+    uint16_t conn_id;
+    esp_gatt_if_t gatts_if;
+    struct ble_conn *next;
+} ble_conn;
+
+// NOTE: list of connections with notify enabled
+extern ble_conn *ble_conn_lst;
+
+void ble_conn_lst_insert(const esp_gatt_if_t, const uint16_t);
+void ble_conn_lst_remove(const uint16_t);
+void ble_conn_lst_map(void(*fn)(const esp_gatt_if_t, const uint16_t, uint8_t*, const uint16_t), uint8_t*, const uint16_t);
 
 #endif

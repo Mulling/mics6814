@@ -67,12 +67,8 @@ uint32_t mics6814_read_voltage(){
     // NOTE: the voltage should never get this high, so doing this *should* be fine
     if (!mics6814_skip_warmup && (time(NULL) <= (time_t)MICS6814_WARMUP_TIME)) return 0x80000000;
 
-    // XXX: don't know if we need this critical section, since the ADC already has one
-    // this does prevent the task from begin preempted when sampling
-    taskENTER_CRITICAL(&mux);
     for (uint8_t i = 0; i < MICS6814_SAMPLE_SIZE; i++)
         ret += adc1_get_raw((adc_channel_t)MICS6814_ADC_CHANNEL);
-    taskEXIT_CRITICAL(&mux);
 
     return esp_adc_cal_raw_to_voltage((ret >> MICS6814_SAMPLE) & 0xFFF, &mics6814_adc_characteristics);
 }
