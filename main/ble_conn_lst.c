@@ -13,12 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+static const char __attribute__((unused)) *TAG = "ble_conn";
+
 #include "ble_conn_lst.h"
 
 #include <esp_gatts_api.h>
+#include <esp_log.h>
 #include <stdint.h>
-
 #include <stdio.h>
+
+#include "utils.h"
 
 inline __attribute__((always_inline))
 void ble_conn_lst_insert(const esp_gatt_if_t gatts_if, const uint16_t conn_id){
@@ -40,6 +44,8 @@ void ble_conn_lst_insert(const esp_gatt_if_t gatts_if, const uint16_t conn_id){
     new->next = NULL;
 
     *head = new;
+
+    oled_printf(5, " ES NOTIFY=%u", size + 1);
 }
 
 inline __attribute__((always_inline))
@@ -51,6 +57,7 @@ void ble_conn_lst_remove(const uint16_t conn_id){
             ble_conn *old = *head;
             *head = (*head)->next;
             free(old);
+            if ((*head) == NULL) oled_printf(5, "                ");
             return;
         }
 

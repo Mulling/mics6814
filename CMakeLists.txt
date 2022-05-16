@@ -6,10 +6,8 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(mics6814)
 
 set_source_files_properties(tags PROPERTIES GENERATED true)
-add_custom_target(
-    tags
+add_custom_target(tags
     COMMAND ctags -R --language-force=c --exclude=build
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-)
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 add_dependencies(__idf_mics6814 tags)

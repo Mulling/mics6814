@@ -34,6 +34,7 @@ static const char *TAG = "ble";
 #define LOG_LOCAL_LEVEL ESP_LOG_WARN
 
 #include "ble_conn_lst.h"
+#include "utils.h"
 
 #define DEVICE_NAME "MICS-6814"
 
@@ -66,6 +67,8 @@ static const uint8_t esp_gatt_char_prop_bit_rn = ESP_GATT_CHAR_PROP_BIT_READ | E
 
 static const uint8_t nh3_value[CHAR_VAL_NUM] = {0x30, 0x30, 0x30, 0x30};
 static const uint8_t nh3_ccc[2]              = {0x00, 0x00};
+
+static uint8_t conn = 0; // number of active connection, should be less than 4
 
 static QueueHandle_t ble_adv_msg_queue;
 
@@ -280,7 +283,6 @@ void gatts_event_handler(esp_gatts_cb_event_t event,
         case ESP_GATTS_CONNECT_EVT:
             ESP_LOGI(TAG, "ESP_GATTS_CONNECT_EVT conn_id = %d",
                     param->connect.conn_id);
-
             esp_log_buffer_hex(TAG, param->connect.remote_bda, 5);
 
             esp_ble_conn_update_params_t conn_params = {
@@ -292,6 +294,7 @@ void gatts_event_handler(esp_gatts_cb_event_t event,
             memcpy(conn_params.bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
 
             esp_ble_gap_update_conn_params(&conn_params);
+            oled_printf(4, " ES CONNECTED=%u", ++conn);
             break;
 
         case ESP_GATTS_DISCONNECT_EVT:
@@ -299,6 +302,10 @@ void gatts_event_handler(esp_gatts_cb_event_t event,
                     param->disconnect.reason);
             // if the connection is in the notify list, remove it
             ble_conn_lst_remove(param->disconnect.conn_id);
+            if (!(--conn))
+                oled_printf(4, "                ");
+            else
+                oled_printf(4, " ES CONNECTED=%u", conn);
             break;
 
         case ESP_GATTS_CREAT_ATTR_TAB_EVT:

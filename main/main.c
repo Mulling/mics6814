@@ -39,10 +39,16 @@ static const char *TAG = "main";
 
 #define TASK_DELAY_MS(ms) (vTaskDelay(pdMS_TO_TICKS((ms))))
 
+#define TASK_DELAY_UNTIL_INIT() TickType_t __prev = xTaskGetTickCount()
+#define TASK_DELAY_UNTIL_MS(ms) do {               \
+    vTaskDelayUntil(&__prev, pdMS_TO_TICKS((ms))); \
+    __prev = xTaskGetTickCount();                  \
+} while(0);
+
 // log output to serial monitor
 #undef LOG_CSV
 
-#define MICS_READ_TIME ((1000 * 1))
+#define MICS6814_READ_TIME ((1000 * 1))
 #define AM2302_READ_TIME ((1000 * 60))
 
 SSD1306_t ssd1306_dev;
@@ -50,7 +56,7 @@ SSD1306_t ssd1306_dev;
 volatile bool mics6814_skip_warmup = false;
 
 static TaskHandle_t am2302_loop_handle;
-static TaskHandle_t mics_loop_handle;
+static TaskHandle_t mics6814_loop_handle;
 
 static
 void IRAM_ATTR prg_isr(void *arg){
@@ -77,36 +83,43 @@ void am2302_loop(void *args){
     int16_t t = 0;
     int16_t h = 0;
 
+    uint8_t r = 0;
+
     // NOTE: this needs to happen here since this task is pinned to core 1,
     // if stating this on core 0 the first iteration fails, but it somehow
-    // manages to fix itself, there is no documentation...
+    // manages to fix itself, there is no documentation about this behaviour
+    // NOTE: app_main should be pinned to core 1 as well...
     am2302_init();
 
     TASK_DELAY_MS(10); // NOTE: wait for the mics task to be created
-
+    TASK_DELAY_UNTIL_INIT();
     while (1){
-
         if (am2302_read(&t, &h) == ESP_OK){
-            oled_printf(2, " TEMP: %.1fC     ", t / 10.0f);
-            oled_printf(4, " HUMD: %.1f%%    ", h / 10.0f);
+            oled_printf(2, " T=%.1fC H=%.1f%%   ", t / 10.0f, h / 10.0f);
+            oled_printf(3, "                    ");
+            r = 0;
         }
         else {
-            oled_printf(2, "    DHT FAIL!   ");
-            oled_printf(4, "    DHT FAIL!   ");
+            r++;
+            oled_printf(3, " T&H IS %ds OLD", r * AM2302_READ_TIME);
         }
 
-        xTaskNotify(mics_loop_handle, (((uint32_t)t) << 16) | h, eSetValueWithOverwrite);
-        TASK_DELAY_MS(AM2302_READ_TIME);
+        xTaskNotify(mics6814_loop_handle, (((uint32_t)t) << 16) | h, eSetValueWithOverwrite);
+        TASK_DELAY_UNTIL_MS(AM2302_READ_TIME);
     }
 }
 
-void mics_loop(void *args){
+void mics6814_loop(void *args){
     uint32_t v;
     uint32_t n;
+
     int16_t t = 0;
     int16_t h = 0;
+    int16_t g = 0; // TODO: temperature and humidity gain
 
     mics6814_init();
+
+    TASK_DELAY_UNTIL_INIT();
 
 #ifdef LOG_CSV
     printf("SENSOR(mV),TEMPERATURE(C),HUMIDITY(%%)\n"); fflush(stdout);
@@ -120,7 +133,7 @@ void mics_loop(void *args){
         }
 
         if (v >> 31){
-            oled_printf(0, " WARMING UP %lu ", MICS6814_WARMUP_TIME - time(NULL));
+            oled_printf(0, " WARMING UP %lu  ", MICS6814_WARMUP_TIME - time(NULL));
         }
         else{
             uint8_t value[4];
@@ -132,7 +145,8 @@ void mics_loop(void *args){
                 volt %= k;
             }
 
-            oled_printf(0, " SENSOR: %umV   ", v);
+            oled_printf(0, " NH3=%uppm      ", v);
+            oled_printf(1, " GAIN=%dmV      ", g);
 
             ble_update_adv_msg("MICS %.1f %.1f %.1f", v / 1000.0f, t / 10.0f, h / 10.0f);
 
@@ -143,7 +157,7 @@ void mics_loop(void *args){
 #endif
         }
 
-        TASK_DELAY_MS(MICS_READ_TIME);
+        TASK_DELAY_UNTIL_MS(MICS6814_READ_TIME);
     }
 }
 
@@ -164,5 +178,5 @@ void app_main(void){
     // TASK_DELAY_MS(1000); // wait for the battery to stabilize
 
     xTaskCreatePinnedToCore(am2302_loop, "am2302_loop", 2048, NULL, 23, &am2302_loop_handle, 1);
-    xTaskCreatePinnedToCore(mics_loop, "mics_loop", 2048, NULL, 24, &mics_loop_handle, 1);
+    xTaskCreatePinnedToCore(mics6814_loop, "mics_loop", 2048, NULL, 24, &mics6814_loop_handle, 1);
 }
