@@ -20,7 +20,7 @@
 
 extern SSD1306_t ssd1306_dev;
 
-void oled_printf_init();
-void oled_printf(const uint8_t row, const char *restrict fmt, ...);
+void oprintf_init();
+void oprintf(const uint8_t row, const char *restrict fmt, ...);
 
 #endif

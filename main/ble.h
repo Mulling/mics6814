@@ -20,6 +20,6 @@
 
 esp_err_t ble_init();
 void ble_set_nh3_attr(uint8_t *value, const uint16_t);
-void ble_update_adv_msg(const char *adv_msg, ...);
+void ble_update_adv_msg(uint16_t service_data, const char *adv_msg, ...);
 
 #endif

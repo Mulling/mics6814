@@ -46,10 +46,16 @@ static const char *TAG = "main";
 } while(0);
 
 // log output to serial monitor
-#undef LOG_CSV
+#define LOG_CSV
 
-#define MICS6814_READ_TIME ((1000 * 1))
-#define AM2302_READ_TIME ((1000 * 60))
+#define MICS6814_READ_TIME ((1000 * 1)) // 1 second
+#define AM2302_READ_TIME   ((1000 * 5)) // 5 seconds
+
+#define SENSOR_BLE_MSG_FMT       "MICS-NH3@%.1fmV"
+#define SENSOR_RAW_FMT           "RAW=%umV"
+#define SENSOR_REG_FMT           "NH3=%umV"
+#define SENSOR_WARMUP_FMT        "WARMING UP %lu"
+#define TEMPERATURE_HUMIDITY_FMT "T=%.1fC H=%.1f%%"
 
 SSD1306_t ssd1306_dev;
 
@@ -74,7 +80,7 @@ static inline __attribute__((always_inline))
 
         gpio_config(&gpio);
         gpio_install_isr_service(0);
-        gpio_isr_handler_add(PRG_GPIO, prg_isr, (void*)PRG_GPIO);
+        gpio_isr_handler_add(PRG_GPIO, prg_isr, (void *)PRG_GPIO);
 
         ESP_LOGI(TAG, "ISR installed on PRG button");
     }
@@ -83,80 +89,77 @@ void am2302_loop(void *args){
     int16_t t = 0;
     int16_t h = 0;
 
-    uint8_t r = 0;
-
     // NOTE: this needs to happen here since this task is pinned to core 1,
     // if stating this on core 0 the first iteration fails, but it somehow
     // manages to fix itself, there is no documentation about this behaviour
-    // NOTE: app_main should be pinned to core 1 as well...
     am2302_init();
 
     TASK_DELAY_MS(10); // NOTE: wait for the mics task to be created
+
     TASK_DELAY_UNTIL_INIT();
     while (1){
         if (am2302_read(&t, &h) == ESP_OK){
-            oled_printf(2, " T=%.1fC H=%.1f%%   ", t / 10.0f, h / 10.0f);
-            oled_printf(3, "                    ");
-            r = 0;
-        }
-        else {
-            r++;
-            oled_printf(3, " T&H IS %ds OLD", r * AM2302_READ_TIME);
+            oprintf(2, TEMPERATURE_HUMIDITY_FMT, t / 10.0f, h / 10.0f);
+
+            xTaskNotify(mics6814_loop_handle, (((uint32_t)t) << 16) | h, eSetValueWithOverwrite);
         }
 
-        xTaskNotify(mics6814_loop_handle, (((uint32_t)t) << 16) | h, eSetValueWithOverwrite);
         TASK_DELAY_UNTIL_MS(AM2302_READ_TIME);
     }
 }
 
+static inline __attribute__((always_inline))
+uint16_t to_sfloat16(const uint32_t bits){
+    // NOTE: IEEE-11073 SFLOAT, source: Personal Health Devices Transcoding WP
+    // +----------------+-----------------+
+    // | 4 bits expoent | 12 bit mantissa |
+    // +----------------+-----------------+
+
+    uint8_t  e = 0x0;
+    // NOTE: it's fine doing this since the concentration
+    // *should* never be higher than 500ppm (< 2^12)
+    return ((e << 12) & 0xF000) | (bits & 0x0FFF);
+}
+
 void mics6814_loop(void *args){
-    uint32_t v;
+    uint32_t vraw; // raw voltage reading
+    uint32_t vreg; // corrected voltage for temperature and humidity
     uint32_t n;
 
     int16_t t = 0;
     int16_t h = 0;
-    int16_t g = 0; // TODO: temperature and humidity gain
+
+    // regression beta
+    float beta[3] = { 1323.56724301, -26.46680528, -9.315224 };
 
     mics6814_init();
 
     TASK_DELAY_UNTIL_INIT();
-
-#ifdef LOG_CSV
-    printf("SENSOR(mV),TEMPERATURE(C),HUMIDITY(%%)\n"); fflush(stdout);
-#endif
     while (1){
-        v = mics6814_read_voltage();
-
         if (xTaskNotifyWait(0, 0, &n, 0) == pdPASS){
             t = 0xFFFF & (n >> 16);
             h = 0xFFFF & n;
         }
 
-        if (v >> 31){
-            oled_printf(0, " WARMING UP %lu  ", MICS6814_WARMUP_TIME - time(NULL));
-        }
-        else{
-            uint8_t value[4];
+        if ((vraw = mics6814_read_voltage()) >> 31){
+            oprintf(0, SENSOR_WARMUP_FMT, MICS6814_WARMUP_TIME - time(NULL));
+            oprintf(1, "");
+        } else {
+            vreg = vraw - (beta[0] + (beta[1] * t / 10.0) + (beta[2] * h / 10.0));
 
-            uint16_t volt = v;
+            uint16_t vreg_sfloat16 = to_sfloat16(vreg);
 
-            for (uint16_t i = 0, k = 1000; i < 4; i++, k /= 10){
-                value[i] = volt / k + 48;
-                volt %= k;
-            }
+            ble_set_nh3_attr((uint8_t *)&vreg_sfloat16, sizeof(uint8_t) * 2);
 
-            oled_printf(0, " NH3=%uppm      ", v);
-            oled_printf(1, " GAIN=%dmV      ", g);
+            ble_update_adv_msg(vreg_sfloat16, SENSOR_BLE_MSG_FMT, (float)vreg);
 
-            ble_update_adv_msg("MICS %.1f %.1f %.1f", v / 1000.0f, t / 10.0f, h / 10.0f);
-
-            ble_set_nh3_attr(value, sizeof(value));
+            oprintf(0, SENSOR_RAW_FMT, vraw);
+            oprintf(1, SENSOR_REG_FMT, vreg);
 
 #ifdef LOG_CSV
-            printf("%u,%.1f,%.1f\n", v, t / 10.0, h / 10.0); fflush(stdout);
+            printf("%u,%.1f,%.1f,%u\n", vraw, t / 10.0, h / 10.0, vreg); fflush(stdout);
 #endif
         }
-
         TASK_DELAY_UNTIL_MS(MICS6814_READ_TIME);
     }
 }
@@ -171,7 +174,7 @@ void app_main(void){
 
     prg_isr_init();
 
-    oled_printf_init();
+    oprintf_init();
 
     ESP_ERROR_CHECK(ble_init());
 

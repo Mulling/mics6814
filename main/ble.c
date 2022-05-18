@@ -29,11 +29,9 @@ static const char *TAG = "ble";
 #include <nvs_flash.h>
 #include <string.h>
 
-// FIXME: seems to not work sometimes...
 #undef LOG_LOCAL_LEVEL
 #define LOG_LOCAL_LEVEL ESP_LOG_WARN
 
-#include "ble_conn_lst.h"
 #include "utils.h"
 
 #define DEVICE_NAME "MICS-6814"
@@ -43,7 +41,10 @@ static const char *TAG = "ble";
 #define SVC_INST_ID 0x0
 
 #define CHAR_VAL_LEN_MAX (CHAR_VAL_NUM * sizeof(uint8_t))
-#define CHAR_VAL_NUM     (4)
+#define CHAR_VAL_NUM     (2)
+
+#define ES_CONNECTED_FMT "ES CONNECTED=%u"
+#define ES_NOTIFY_FMT    "ES NOTIFY=%u"
 
 enum {
     IDX_SVC = 0x00,
@@ -53,7 +54,17 @@ enum {
     IDX_SIZE
 };
 
+typedef struct ble_conn {
+    uint16_t conn_id;
+    esp_gatt_if_t gatts_if;
+    struct ble_conn *next;
+} ble_conn;
+
 ble_conn *ble_conn_lst;
+
+void ble_conn_lst_insert(const esp_gatt_if_t, const uint16_t);
+void ble_conn_lst_remove(const uint16_t);
+void ble_conn_lst_map(void (*)(const esp_gatt_if_t, const uint16_t, uint8_t*, const uint16_t), uint8_t*, const uint16_t);
 
 static uint16_t nh3_handle_table[IDX_SIZE];
 
@@ -65,10 +76,10 @@ static const uint16_t esp_gatt_uuid_pri_service        = ESP_GATT_UUID_PRI_SERVI
 
 static const uint8_t esp_gatt_char_prop_bit_rn = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 
-static const uint8_t nh3_value[CHAR_VAL_NUM] = {0x30, 0x30, 0x30, 0x30};
+static const uint8_t nh3_value[CHAR_VAL_NUM] = {0x30, 0x30};
 static const uint8_t nh3_ccc[2]              = {0x00, 0x00};
 
-static uint8_t conn = 0; // number of active connection, should be less than 4
+static uint8_t conn = 0; // number of active connections, should be less than 4
 
 static QueueHandle_t ble_adv_msg_queue;
 
@@ -125,20 +136,29 @@ static const esp_gatts_attr_db_t gatt_db[IDX_SIZE] = {
 };
 
 static uint8_t raw_adv_data[31] = {
-    0x02, 0x01, 0x06,       // flags
     0x02, 0x0A, 0xEB,       // tx power
     0x03, 0x03, 0x2B, 0xCF, // 16-bit service uuid
     0x03, 0x19, 0x05, 0x42, // appearance values
     0x0A, 0x09, 'M', 'I', 'C', 'S', '-', '6', '8', '1', '4'
-};
+}; //            ^
+   //            |
+   //            |
+   //            +---------------+
+   //                            |
+#define ADV_DATA_LOCAL_NAME     13
+#define ADV_DATA_LOCAL_NAME_LEN 11
 
 static uint8_t raw_scan_rsp_data[31] = {
-    // TODO: add service data https://btprodspecificationrefs.blob.core.windows.net/assigned-numbers/Assigned%20Number%20Types/Generic%20Access%20Profile.pdf
-    0x02, 0x01, 0x06,       // flags
     0x02, 0x0A, 0xEB,       // tx power
     0x03, 0x03, 0x2B, 0xCF, // 16-bit service uuid
-    0x03, 0x19, 0x05, 0x42, // appearance values
-};
+    0x03, 0x19, 0x05, 0x42, // appearance value
+    0x03, 0x16, 0x00, 0x00  // service data
+}; //            ^
+   //            |
+   //            |
+   //            +-------------+
+   //                          |
+#define SCAN_RSP_SERVICE_DATA 13
 
 static esp_ble_adv_params_t ble_adv_params = {
     .adv_int_min       = 0x20,
@@ -166,66 +186,64 @@ void ble_set_nh3_attr(uint8_t *value, const uint16_t size){
 void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param){
     switch(event){
         case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
-            ESP_LOGI(TAG, "ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT");
+            ESP_LOGD(TAG, "ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT");
             ESP_ERROR_CHECK(esp_ble_gap_start_advertising(&ble_adv_params));
             break;
 
         case ESP_GAP_BLE_SCAN_RSP_DATA_SET_COMPLETE_EVT:
-            ESP_LOGI(TAG, "ESP_GAP_BLE_SCAN_RSP_DATA_SET_COMPLETE_EVT");
+            ESP_LOGD(TAG, "ESP_GAP_BLE_SCAN_RSP_DATA_SET_COMPLETE_EVT");
+            ESP_ERROR_CHECK(esp_ble_gap_start_advertising(&ble_adv_params));
             break;
 
         case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
-            ESP_LOGI(TAG, "ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT");
+            ESP_LOGD(TAG, "ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT");
             {
-                char ble_adv_msg[18 + 1];
-                size_t n;
+                uint8_t ble_adv_msg[20 + 1];
+                uint8_t n;
 
-                if (xQueueReceive(ble_adv_msg_queue, (void*)ble_adv_msg, (TickType_t)0) == pdPASS){
+                if (xQueueReceive(ble_adv_msg_queue, (void *)ble_adv_msg, (TickType_t)0) == pdPASS){
 
-                    memcpy(&raw_adv_data[16], ble_adv_msg, (n = strlen(ble_adv_msg)));
-                    raw_adv_data[14] = n + 1;
-
+                    memcpy(&raw_adv_data[ADV_DATA_LOCAL_NAME], ble_adv_msg + 2, (n = strlen((char *)ble_adv_msg + 2)));
+                    // including 0x09
+                    raw_adv_data[ADV_DATA_LOCAL_NAME_LEN] = n + 1;
                     ESP_ERROR_CHECK(esp_ble_gap_config_adv_data_raw(raw_adv_data, sizeof(raw_adv_data)));
-                }
-                else{
+
+                    memcpy(&raw_scan_rsp_data[SCAN_RSP_SERVICE_DATA], ble_adv_msg, sizeof(uint16_t));
+                    ESP_ERROR_CHECK(esp_ble_gap_config_scan_rsp_data_raw(raw_scan_rsp_data, sizeof(raw_scan_rsp_data)));
+                } else {
                     ESP_ERROR_CHECK(esp_ble_gap_start_advertising(&ble_adv_params));
                 }
             }
             break;
 
-        case ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT:
-            ESP_LOGI(TAG, "ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT status = %d, min_int = %d, max_int = %d,conn_int = %d,latency = %d, timeout = %d",
-                    param->update_conn_params.status,
-                    param->update_conn_params.min_int,
-                    param->update_conn_params.max_int,
-                    param->update_conn_params.conn_int,
-                    param->update_conn_params.latency,
-                    param->update_conn_params.timeout);
-            break;
         default:
-            ESP_LOGI(TAG, "GAP unhandled event %d", event);
+            ESP_LOGD(TAG, "GAP unhandled event %d", event);
             break;
     }
 }
 
-void ble_update_adv_msg(const char *restrict fmt, ...){
-    char adv_msg[18 + 1];
+void ble_update_adv_msg(const uint16_t service_data, const char *restrict fmt, ...){
+    // NOTE: maximum msg size is 18 + \0
+    char adv_msg[20 + 1];
     va_list args;
 
     va_start(args, fmt);
-    vsnprintf(adv_msg, (size_t)(18 + 1), fmt, args);
+    vsnprintf(adv_msg + 2, (size_t)(18 + 1), fmt, args);
     va_end(args);
+
+    memcpy(adv_msg, &service_data, sizeof(uint16_t));
 
     xQueueSend(ble_adv_msg_queue, (void*)adv_msg, (TickType_t)0);
     ESP_ERROR_CHECK(esp_ble_gap_stop_advertising());
 }
 
-void gatts_event_handler(esp_gatts_cb_event_t event,
+void gatts_event_handler(
+        esp_gatts_cb_event_t event,
         esp_gatt_if_t gatts_if,
         esp_ble_gatts_cb_param_t *param){
     switch (event){
         case ESP_GATTS_REG_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_REG_EVT");
+            ESP_LOGD(TAG, "ESP_GATTS_REG_EVT");
 
             ESP_ERROR_CHECK(esp_ble_gap_set_device_name(DEVICE_NAME));
             ESP_ERROR_CHECK(esp_ble_gap_config_adv_data_raw(raw_adv_data, sizeof(raw_adv_data)));
@@ -233,25 +251,16 @@ void gatts_event_handler(esp_gatts_cb_event_t event,
             ESP_ERROR_CHECK(esp_ble_gatts_create_attr_tab(gatt_db, gatts_if, IDX_SIZE, SVC_INST_ID));
             break;
 
-        case ESP_GATTS_READ_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_READ_EVT");
-            break;
-
         case ESP_GATTS_WRITE_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_WRITE_EVT");
             switch (param->write.value[0]){
                 case 0x00:
-                    ESP_LOGI(TAG, "ESP_GATTS_WRITE_EVT notify/indicate disable");
+                    ESP_LOGD(TAG, "ESP_GATTS_WRITE_EVT notify/indicate disable");
                     ble_conn_lst_remove(param->write.conn_id);
                     break;
 
                 case 0x01:
-                    ESP_LOGI(TAG, "ESP_GATTS_WRITE_EVT notify enable");
+                    ESP_LOGD(TAG, "ESP_GATTS_WRITE_EVT notify enable");
                     ble_conn_lst_insert(gatts_if, param->write.conn_id);
-                    break;
-
-                case 0x02:
-                    ESP_LOGI(TAG, "ESP_GATTS_WRITE_EVT indicate enable"); // NOTE: not supported
                     break;
 
                 default:
@@ -259,68 +268,38 @@ void gatts_event_handler(esp_gatts_cb_event_t event,
             }
             break;
 
-        case ESP_GATTS_EXEC_WRITE_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_EXEC_WRITE_EVT");
-            break;
-
-        case ESP_GATTS_MTU_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_MTU_EVT MTU %d",
-                    param->mtu.mtu);
-            break;
-
-        case ESP_GATTS_CONF_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_CONF_EVT status = %d, attr_handle %d",
-                    param->conf.status,
-                    param->conf.handle);
-            break;
-
-        case ESP_GATTS_START_EVT:
-            ESP_LOGI(TAG, "SERVICE_START_EVT status %d, service_handle %d",
-                    param->start.status,
-                    param->start.service_handle);
-            break;
-
         case ESP_GATTS_CONNECT_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_CONNECT_EVT conn_id = %d",
-                    param->connect.conn_id);
-            esp_log_buffer_hex(TAG, param->connect.remote_bda, 5);
+            {
+                ESP_LOGD(TAG, "ESP_GATTS_CONNECT_EVT conn_id = %d", param->connect.conn_id);
+                // esp_log_buffer_hex(TAG, param->connect.remote_bda, 5);
 
-            esp_ble_conn_update_params_t conn_params = {
-                .latency = 0,
-                .max_int = 0x20, // 0x20 * 1.25ms = 40ms
-                .min_int = 0x10, // 0x10 * 1.25ms = 20ms
-                .timeout = 1000, // 1000 * 10ms   = 10000ms
-            };
-            memcpy(conn_params.bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
+                esp_ble_conn_update_params_t conn_params = {
+                    .latency = 0,
+                    .max_int = 0x20, // 0x20 * 1.25ms = 40ms
+                    .min_int = 0x10, // 0x10 * 1.25ms = 20ms
+                    .timeout = 1000, // 1000 * 10ms   = 10000ms
+                };
+                memcpy(conn_params.bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
 
-            esp_ble_gap_update_conn_params(&conn_params);
-            oled_printf(4, " ES CONNECTED=%u", ++conn);
+                esp_ble_gap_update_conn_params(&conn_params);
+                oprintf(4, ES_CONNECTED_FMT, ++conn);
+            }
             break;
 
         case ESP_GATTS_DISCONNECT_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_DISCONNECT_EVT reason = 0x%x",
-                    param->disconnect.reason);
+            ESP_LOGD(TAG, "ESP_GATTS_DISCONNECT_EVT reason = 0x%x", param->disconnect.reason);
             // if the connection is in the notify list, remove it
             ble_conn_lst_remove(param->disconnect.conn_id);
+            ESP_ERROR_CHECK(esp_ble_gap_start_advertising(&ble_adv_params));
             if (!(--conn))
-                oled_printf(4, "                ");
+                oprintf(4, "");
             else
-                oled_printf(4, " ES CONNECTED=%u", conn);
+                oprintf(4, ES_CONNECTED_FMT, conn);
             break;
 
         case ESP_GATTS_CREAT_ATTR_TAB_EVT:
-            if (param->add_attr_tab.status != ESP_GATT_OK){
-                ESP_LOGE(TAG, "ESP_GATTS_CREAT_ATTR_TAB_EVT code = 0x%x",
-                        param->add_attr_tab.status);
-            }
-            else if (param->add_attr_tab.num_handle != IDX_SIZE){
-                ESP_LOGE(TAG, "ESP_GATTS_CREAT_ATTR_TAB_EVT (num_handle = %d) != (IDX_SIZE = %d)",
-                        param->add_attr_tab.num_handle,
-                        IDX_SIZE);
-            }
-            else {
-                ESP_LOGI(TAG, "ESP_GATTS_CREAT_ATTR_TAB_EVT handle = %d",
-                        param->add_attr_tab.num_handle);
+            if (param->add_attr_tab.status == ESP_GATT_OK && param->add_attr_tab.num_handle == IDX_SIZE){
+                ESP_LOGD(TAG, "ESP_GATTS_CREAT_ATTR_TAB_EVT handle = %d", param->add_attr_tab.num_handle);
 
                 memcpy(nh3_handle_table, param->add_attr_tab.handles, sizeof(nh3_handle_table));
                 esp_ble_gatts_start_service(nh3_handle_table[IDX_SVC]);
@@ -328,21 +307,21 @@ void gatts_event_handler(esp_gatts_cb_event_t event,
             break;
 
         case ESP_GATTS_SET_ATTR_VAL_EVT:
-            ESP_LOGI(TAG, "ESP_GATTS_SET_ATTR_VAL_EVT");
+            ESP_LOGD(TAG, "ESP_GATTS_SET_ATTR_VAL_EVT");
 
             const uint8_t *value_ptr;
             uint16_t lentgh;
 
             ESP_ERROR_CHECK(esp_ble_gatts_get_attr_value(param->set_attr_val.attr_handle, &lentgh, &value_ptr));
 
-            uint8_t value[4];
+            uint8_t value[CHAR_VAL_NUM];
             memcpy(value, value_ptr, sizeof(value));
 
             ble_conn_lst_map(ble_notify_cb, value, sizeof(value));
             break;
 
         default:
-            ESP_LOGI(TAG, "GATTS unhandled event %d", event);
+            ESP_LOGD(TAG, "GATTS unhandled event %d", event);
             break;
     }
 }
@@ -365,8 +344,63 @@ esp_err_t ble_init(){
     ESP_ERROR_CHECK(esp_ble_gatts_app_register(ESP_APP_ID));
     ESP_ERROR_CHECK(esp_ble_gatt_set_local_mtu(LOCAL_MTU));
 
-    if((ble_adv_msg_queue = xQueueCreate(10, sizeof(char) * (18 + 1))) == NULL)
-        ESP_LOGE(TAG, "Failed to crate ble_msg_queue");
+    // NOTE: first two bytes are the service data, the remaining bytes are the adv msg including \0
+    if((ble_adv_msg_queue = xQueueCreate(10, sizeof(char) * (20 + 1))) == NULL)
+        ESP_LOGE(TAG, "fail to crate ble_msg_queue");
 
     return ESP_OK;
+}
+
+inline __attribute__((always_inline))
+void ble_conn_lst_insert(const esp_gatt_if_t gatts_if, const uint16_t conn_id){
+    ble_conn **head = &ble_conn_lst;
+
+    uint8_t size = 0;
+
+    while ((*head)){
+        // NOTE: this should not happen since the maximum number of connections is controlled by the BT controller
+        if ((++size) == CONFIG_BTDM_CTRL_BLE_MAX_CONN)
+            return;
+        head = &(*head)->next;
+    }
+
+    ble_conn *new = malloc(sizeof(ble_conn));
+
+    new->conn_id = conn_id;
+    new->gatts_if = gatts_if;
+    new->next = NULL;
+
+    *head = new;
+
+    oprintf(5, ES_NOTIFY_FMT, size + 1);
+}
+
+inline __attribute__((always_inline))
+void ble_conn_lst_remove(const uint16_t conn_id){
+    ble_conn **head = &ble_conn_lst;
+
+    while ((*head)){
+        if ((*head)->conn_id == conn_id){
+            ble_conn *old = *head;
+            *head = (*head)->next;
+            free(old);
+            if ((*head) == NULL) oprintf(5, "");
+            return;
+        }
+
+        head = &(*head)->next;
+    }
+}
+
+inline __attribute__((always_inline))
+void ble_conn_lst_map(
+        void (*fn)(const esp_gatt_if_t, const uint16_t, uint8_t*, const uint16_t),
+        uint8_t *value,
+        const uint16_t size){
+    ble_conn **head = &ble_conn_lst;
+
+    while ((*head)){
+        fn((*head)->gatts_if, (*head)->conn_id, value, size);
+        head = &(*head)->next;
+    }
 }

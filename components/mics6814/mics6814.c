@@ -26,7 +26,6 @@ static const char *TAG = "mics6814";
 #include "mics6814.h"
 
 static esp_adc_cal_characteristics_t mics6814_adc_characteristics;
-static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 
 static inline __attribute__((always_inline))
 void mics6814_init_adc(){

@@ -10,6 +10,7 @@
 
 #define tag "SSD1306"
 
+// NOTE: called once
 inline
 void ssd1306_init(SSD1306_t * dev, int width, int height)
 {
@@ -20,17 +21,21 @@ void ssd1306_init(SSD1306_t * dev, int width, int height)
     }
 }
 
+// NOTE: called once
 inline
 void ssd1306_display_text(SSD1306_t * dev, int page, char * text, int text_len, bool invert)
 {
     if (page >= dev->_pages) return;
-    int _text_len = text_len;
-    if (_text_len > 16) _text_len = 16;
+
+    uint8_t _text[16] = { ' ' };
+    uint8_t _text_len = 16;
+
+    memcpy(_text, text, (text_len > 16 ? 16 : text_len));
 
     uint8_t seg = 0;
     uint8_t image[8];
     for (uint8_t i = 0; i < _text_len; i++) {
-        memcpy(image, font8x8_basic_tr[(uint8_t)text[i]], 8);
+        memcpy(image, font8x8_basic_tr[(uint8_t)_text[i]], 8);
         if (invert) ssd1306_invert(image, 8);
         if (dev->_flip) ssd1306_flip(image, 8);
         if (dev->_address == SPIAddress) {
@@ -53,7 +58,7 @@ void ssd1306_display_image(SSD1306_t * dev, int page, int seg, uint8_t * images,
 
 void ssd1306_clear_screen(SSD1306_t * dev, bool invert)
 {
-    char space[16] = {};
+    char space[16] = { ' ' };
     // memset(space, 0x20, sizeof(space));
     for (int page = 0; page < dev->_pages; page++) {
         ssd1306_display_text(dev, page, space, sizeof(space), invert);
@@ -62,7 +67,7 @@ void ssd1306_clear_screen(SSD1306_t * dev, bool invert)
 
 void ssd1306_clear_line(SSD1306_t * dev, int page, bool invert)
 {
-    char space[16] = {};
+    char space[16] = { ' ' };
     // memset(space, 0x20, sizeof(space));
     ssd1306_display_text(dev, page, space, sizeof(space), invert);
 }

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-static const char *TAG = "main";
+static const char *TAG = "oprintf";
 
 #include "utils.h"
 
@@ -27,8 +27,8 @@ static const char *TAG = "main";
 
 #define SSD1306_CHAR_LINE 16
 
-static QueueHandle_t oled_text_row_queue;
-static TaskHandle_t ssd1306_drawrow_loop_handle;
+static QueueHandle_t oprintf_loop_queue;
+static TaskHandle_t opritnf_loop_handle;
 
 struct oled_text_row {
     uint8_t row;
@@ -36,26 +36,26 @@ struct oled_text_row {
 };
 
 static
-void ssd1306_drawrow_loop(void *args){
+void oprintf_loop(void *args){
     struct oled_text_row oled_row;
 
     while (1){
         // try to consume all from the queue
-        while (xQueueReceive(oled_text_row_queue, (void*)&oled_row, (TickType_t)portMAX_DELAY) == pdPASS){
+        while (xQueueReceive(oprintf_loop_queue, (void *)&oled_row, (TickType_t)portMAX_DELAY) == pdPASS){
             ssd1306_display_text(&ssd1306_dev, oled_row.row, oled_row.msg, SSD1306_CHAR_LINE , false);
         }
     }
 }
 
 inline __attribute__((always_inline))
-void oled_printf_init(){
-    if ((oled_text_row_queue = xQueueCreate(10, sizeof(struct oled_text_row))) == NULL)
-        ESP_LOGE(TAG, "Failed to create oled_text_row_queue");
+void oprintf_init(){
+    if ((oprintf_loop_queue = xQueueCreate(10, sizeof(struct oled_text_row))) == NULL)
+        ESP_LOGE(TAG, "fail to create oprintf_loop_queue");
 
-    xTaskCreatePinnedToCore(ssd1306_drawrow_loop, "ssd1306_drawrow_loop", 1024, NULL, 1, &ssd1306_drawrow_loop_handle, 1);
+    xTaskCreatePinnedToCore(oprintf_loop, "oprintf_loop", 1024, NULL, 1, &opritnf_loop_handle, 1);
 }
 
-void oled_printf(const uint8_t row, const char *restrict fmt, ...){
+void oprintf(const uint8_t row, const char *restrict fmt, ...){
     struct oled_text_row oled_row = {.row = row};
 
     va_list args;
@@ -64,5 +64,5 @@ void oled_printf(const uint8_t row, const char *restrict fmt, ...){
     vsnprintf(oled_row.msg, SSD1306_CHAR_LINE + 1, fmt, args);
     va_end(args);
 
-    xQueueSend(oled_text_row_queue, (void*)&oled_row, (TickType_t)0);
+    xQueueSend(oprintf_loop_queue, (void *)&oled_row, (TickType_t)0);
 }
