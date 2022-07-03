@@ -57,12 +57,13 @@ inline __attribute__((always_inline))
 void mics6814_init(){
     mics6814_init_adc();
 
+    if (mics6814_calibration_betas == NULL) ESP_LOGE(TAG, "Fail to set calibration betas");
+
     ESP_LOGI(TAG, "Sensor started");
 }
 
 uint32_t mics6814_read_voltage(){
     uint32_t ret = 0;
-
     // NOTE: the voltage should never get this high, so doing this *should* be fine
     if (!mics6814_skip_warmup && (time(NULL) <= (time_t)MICS6814_WARMUP_TIME)) return 0x80000000;
 
@@ -70,4 +71,19 @@ uint32_t mics6814_read_voltage(){
         ret += adc1_get_raw((adc_channel_t)MICS6814_ADC_CHANNEL);
 
     return esp_adc_cal_raw_to_voltage((ret >> MICS6814_SAMPLE) & 0xFFF, &mics6814_adc_characteristics);
+}
+
+inline __attribute__((always_inline))
+float mics6814_vraw_to_vreg(const uint32_t *vraw, const int16_t *temp, const int16_t *humd){
+    return (float)*vraw - (mics6814_calibration_betas[0]
+            + (mics6814_calibration_betas[1] * (*temp) / 10.0)
+            + (mics6814_calibration_betas[2] * (*humd) / 10.0));
+}
+
+inline __attribute__((always_inline))
+float mics6814_to_ppm(const uint32_t *vraw, const int16_t *temp, const int16_t *humd){
+    float vreg = mics6814_vraw_to_vreg(vraw, temp, humd);
+    return (mics6814_calibration_lstsq[0] * mics6814_calibration_lstsq[0] * vreg)
+        + (mics6814_calibration_lstsq[1] * vreg)
+        + mics6814_calibration_lstsq[2];
 }

@@ -40,26 +40,30 @@ static const char *TAG = "main";
 #define TASK_DELAY_MS(ms) (vTaskDelay(pdMS_TO_TICKS((ms))))
 
 #define TASK_DELAY_UNTIL_INIT() TickType_t __prev = xTaskGetTickCount()
-#define TASK_DELAY_UNTIL_MS(ms) do {               \
+#define TASK_DELAY_UNTIL_MS(ms) do { \
     vTaskDelayUntil(&__prev, pdMS_TO_TICKS((ms))); \
-    __prev = xTaskGetTickCount();                  \
+    __prev = xTaskGetTickCount(); \
 } while(0);
 
 // log output to serial monitor
 #define LOG_CSV
 
 #define MICS6814_READ_TIME ((1000 * 1)) // 1 second
-#define AM2302_READ_TIME   ((1000 * 5)) // 5 seconds
+#define AM2302_READ_TIME   ((1000 * 30)) // 30 seconds
 
-#define SENSOR_BLE_MSG_FMT       "MICS-NH3@%.1fmV"
+#define SENSOR_BLE_MSG_FMT       "MICS-NH3@%uppm"
 #define SENSOR_RAW_FMT           "RAW=%umV"
 #define SENSOR_REG_FMT           "NH3=%umV"
+#define SENSOR_PPM_FMT           "NH3=%uppm"
 #define SENSOR_WARMUP_FMT        "WARMING UP %lu"
 #define TEMPERATURE_HUMIDITY_FMT "T=%.1fC H=%.1f%%"
 
 SSD1306_t ssd1306_dev;
 
 volatile bool mics6814_skip_warmup = false;
+
+float *mics6814_calibration_betas = NULL;
+float *mics6814_calibration_lstsq = NULL;
 
 static TaskHandle_t am2302_loop_handle;
 static TaskHandle_t mics6814_loop_handle;
@@ -70,20 +74,20 @@ void IRAM_ATTR prg_isr(void *arg){
 }
 
 static inline __attribute__((always_inline))
-    void prg_isr_init(){
-        gpio_config_t gpio = {
-            .intr_type    = GPIO_INTR_NEGEDGE,
-            .pin_bit_mask = PRG_GPIO_PIN_SEL,
-            .mode         = GPIO_MODE_INPUT,
-            .pull_up_en   = true
-        };
+void prg_isr_init(){
+    gpio_config_t gpio = {
+        .intr_type    = GPIO_INTR_NEGEDGE,
+        .pin_bit_mask = PRG_GPIO_PIN_SEL,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = true
+    };
 
-        gpio_config(&gpio);
-        gpio_install_isr_service(0);
-        gpio_isr_handler_add(PRG_GPIO, prg_isr, (void *)PRG_GPIO);
+    gpio_config(&gpio);
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(PRG_GPIO, prg_isr, (void *)PRG_GPIO);
 
-        ESP_LOGI(TAG, "ISR installed on PRG button");
-    }
+    ESP_LOGI(TAG, "ISR installed on PRG button");
+}
 
 void am2302_loop(void *args){
     int16_t t = 0;
@@ -111,26 +115,39 @@ void am2302_loop(void *args){
 static inline __attribute__((always_inline))
 uint16_t to_sfloat16(const uint32_t bits){
     // NOTE: IEEE-11073 SFLOAT, source: Personal Health Devices Transcoding WP
-    // +----------------+-----------------+
-    // | 4 bits expoent | 12 bit mantissa |
-    // +----------------+-----------------+
+    // +-----------------+-----------------+
+    // | 4 bits exponent | 12 bit mantissa |
+    // +-----------------+-----------------+
 
+    // TODO: fix this mess
     uint8_t  e = 0x0;
     // NOTE: it's fine doing this since the concentration
     // *should* never be higher than 500ppm (< 2^12)
     return ((e << 12) & 0xF000) | (bits & 0x0FFF);
 }
 
+static inline __attribute__((always_inline))
+void ppm_to_string(char *str, uint32_t cppm){
+    for (uint8_t i = 0, k = 100; i < 3; i++, k /= 10){
+        str[i] = cppm / k + 48;
+        cppm %= k;
+    }
+}
+
 void mics6814_loop(void *args){
     uint32_t vraw; // raw voltage reading
     uint32_t vreg; // corrected voltage for temperature and humidity
+    uint32_t cppm;
+
+    float fppm;
+
     uint32_t n;
 
     int16_t t = 0;
     int16_t h = 0;
 
-    // regression beta
-    float beta[3] = { 1323.56724301, -26.46680528, -9.315224 };
+    MICS6814_ALLOC_BETAS(1323.56724301, -26.46680528, -9.315224);
+    MICS6814_ALLOC_LSTSQ(0.00005043, -0.33039421, 501.52061563);
 
     mics6814_init();
 
@@ -145,19 +162,25 @@ void mics6814_loop(void *args){
             oprintf(0, SENSOR_WARMUP_FMT, MICS6814_WARMUP_TIME - time(NULL));
             oprintf(1, "");
         } else {
-            vreg = vraw - (beta[0] + (beta[1] * t / 10.0) + (beta[2] * h / 10.0));
+            vreg = (uint32_t)mics6814_vraw_to_vreg(&vraw, &t, &h);
+            fppm = mics6814_to_ppm(&vraw, &t, &h);
+            cppm = fppm <= 0 ? 0 : (uint32_t)fppm;
+            cppm %= 500;
 
-            uint16_t vreg_sfloat16 = to_sfloat16(vreg);
+            char sppm[3];
+            ppm_to_string(sppm, cppm);
+            ble_set_nh3_attr((uint8_t *)&cppm, sizeof(uint8_t) * 2);
 
-            ble_set_nh3_attr((uint8_t *)&vreg_sfloat16, sizeof(uint8_t) * 2);
+            uint16_t vreg_sfloat16 = to_sfloat16(cppm);
 
-            ble_update_adv_msg(vreg_sfloat16, SENSOR_BLE_MSG_FMT, (float)vreg);
+            ble_update_adv_msg(vreg_sfloat16, SENSOR_BLE_MSG_FMT, cppm);
 
             oprintf(0, SENSOR_RAW_FMT, vraw);
             oprintf(1, SENSOR_REG_FMT, vreg);
+            oprintf(6, SENSOR_PPM_FMT, cppm);
 
 #ifdef LOG_CSV
-            printf("%u,%.1f,%.1f,%u\n", vraw, t / 10.0, h / 10.0, vreg); fflush(stdout);
+            printf("%u,%.1f,%.1f,%u,%u\n", vraw, t / 10.0, h / 10.0, vreg, cppm);
 #endif
         }
         TASK_DELAY_UNTIL_MS(MICS6814_READ_TIME);
@@ -165,7 +188,7 @@ void mics6814_loop(void *args){
 }
 
 void app_main(void){
-    // NOTE: ssd1306 i2c pins are defined using idf.py menucofig
+    // NOTE: ssd1306 i2c pins are defined using idf.py menuconfig
     i2c_master_init(&ssd1306_dev, CONFIG_SDA_GPIO, CONFIG_SCL_GPIO, CONFIG_RESET_GPIO);
 
     ssd1306_init(&ssd1306_dev, 128, 64);

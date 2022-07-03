@@ -41,7 +41,7 @@ static const char *TAG = "ble";
 #define SVC_INST_ID 0x0
 
 #define CHAR_VAL_LEN_MAX (CHAR_VAL_NUM * sizeof(uint8_t))
-#define CHAR_VAL_NUM     (2)
+#define CHAR_VAL_NUM     (3)
 
 #define ES_CONNECTED_FMT "ES CONNECTED=%u"
 #define ES_NOTIFY_FMT    "ES NOTIFY=%u"
@@ -76,7 +76,7 @@ static const uint16_t esp_gatt_uuid_pri_service        = ESP_GATT_UUID_PRI_SERVI
 
 static const uint8_t esp_gatt_char_prop_bit_rn = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 
-static const uint8_t nh3_value[CHAR_VAL_NUM] = {0x30, 0x30};
+static const uint8_t nh3_value[CHAR_VAL_NUM] = {0x30, 0x30, 0x30};
 static const uint8_t nh3_ccc[2]              = {0x00, 0x00};
 
 static uint8_t conn = 0; // number of active connections, should be less than 4
